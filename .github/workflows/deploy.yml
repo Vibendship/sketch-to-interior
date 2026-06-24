@@ -2,14 +2,6 @@ name: Deploy to Replicate
 
 on:
   workflow_dispatch:
-    inputs:
-      model_name:
-        description: "Model name (e.g. vibendship/sketch-to-interior)"
-        required: true
-        default: "vibendship/sketch-to-interior"
-
-env:
-  MODEL_NAME: ${{ inputs.model_name || 'vibendship/sketch-to-interior' }}
 
 jobs:
   deploy:
@@ -19,10 +11,11 @@ jobs:
 
       - name: Setup Cog
         uses: replicate/setup-cog@v2
-        with:
-          token: ${{ secrets.REPLICATE_CLI_AUTH_TOKEN }}
+
+      - name: Login to Replicate Docker registry
+        run: echo "${{ secrets.REPLICATE_API_TOKEN }}" | docker login r8.im -u vibendship --password-stdin
 
       - name: Push to Replicate
-        run: cog push r8.im/${{ env.MODEL_NAME }}
+        run: cog push r8.im/vibendship/sketch-to-interior
         env:
           REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
