@@ -16,6 +16,6 @@ build:
     - "safetensors==0.4.2"
     - "compel==2.0.0"
   run:
-    - "python /src/download_models.py"
+    - "pwd && find / -name download_models.py -maxdepth 4 2>/dev/null"
 
 predict: "predict.py:Predictor"
