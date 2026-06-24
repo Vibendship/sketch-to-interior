@@ -1,0 +1,28 @@
+name: Deploy to Replicate
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_name:
+        description: "Model name (e.g. vibendship/sketch-to-interior)"
+        required: true
+        default: "vibendship/sketch-to-interior"
+
+env:
+  MODEL_NAME: ${{ inputs.model_name || 'vibendship/sketch-to-interior' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Cog
+        uses: replicate/setup-cog@v2
+        with:
+          token: ${{ secrets.REPLICATE_CLI_AUTH_TOKEN }}
+
+      - name: Push to Replicate
+        run: cog push r8.im/${{ env.MODEL_NAME }}
+        env:
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
