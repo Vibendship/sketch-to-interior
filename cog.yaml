@@ -1,0 +1,19 @@
+build:
+  gpu: true
+  python_version: "3.11"
+  system_packages:
+    - "libgl1-mesa-glx"
+    - "libglib2.0-0"
+  python_packages:
+    - "torch==2.1.2"
+    - "diffusers==0.27.2"
+    - "transformers==4.37.2"
+    - "accelerate==0.27.2"
+    - "controlnet-aux==0.0.7"
+    - "opencv-python-headless==4.9.0.80"
+    - "pillow==10.2.0"
+    - "numpy==1.26.3"
+    - "safetensors==0.4.2"
+    - "compel==2.0.0"
+
+predict: "predict.py:Predictor"
