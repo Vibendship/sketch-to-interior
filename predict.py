@@ -145,22 +145,22 @@ class Predictor(BasePredictor):
 
         print("Loading depth estimator …")
         self.depth_feature_extractor = DPTFeatureExtractor.from_pretrained(
-            "Intel/dpt-large", local_files_only=True
+            "Intel/dpt-large", local_files_only=False
         )
         self.depth_estimator = DPTForDepthEstimation.from_pretrained(
-            "Intel/dpt-large", local_files_only=True
+            "Intel/dpt-large", local_files_only=False
         ).to(device)
 
         print("Loading ControlNets …")
         controlnet_depth = ControlNetModel.from_pretrained(
-            CONTROL_DEPTH_ID, torch_dtype=torch.float16, local_files_only=True
+            CONTROL_DEPTH_ID, torch_dtype=torch.float16, local_files_only=False
         ).to(device)
         controlnet_canny = ControlNetModel.from_pretrained(
-            CONTROL_CANNY_ID, torch_dtype=torch.float16, local_files_only=True
+            CONTROL_CANNY_ID, torch_dtype=torch.float16, local_files_only=False
         ).to(device)
 
         print("Loading VAE …")
-        vae = AutoencoderKL.from_pretrained(VAE_ID, torch_dtype=torch.float16, local_files_only=True
+        vae = AutoencoderKL.from_pretrained(VAE_ID, torch_dtype=torch.float16, local_files_only=False
         ).to(device)
 
         print("Loading RealVisXL V5 Lightning pipeline …")

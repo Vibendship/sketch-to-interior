@@ -17,7 +17,3 @@ build:
     - "compel==2.0.0"
 
 predict: "predict.py:Predictor"
-
-build:
-  run:
-    - python download_weights.py
