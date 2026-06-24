@@ -1,27 +1,24 @@
+import gc
 import os
 import cv2
 import numpy as np
 from PIL import Image
 import torch
+import torch.nn.functional as F
 from cog import BasePredictor, Input, Path
 from diffusers import (
     StableDiffusionXLControlNetPipeline,
     ControlNetModel,
-    AutoencoderKL,
     DDIMScheduler,
-    DDPMScheduler,
-    EulerAncestralDiscreteScheduler,
-    DPMSolverMultistepScheduler,
 )
 from compel import Compel, ReturnedEmbeddingsType
-from transformers import AutoTokenizer, DPTFeatureExtractor, DPTForDepthEstimation
+from transformers import AutoImageProcessor, DPTForDepthEstimation
 from controlnet_aux import (
     CannyDetector,
     HEDdetector,
     PidiNetDetector,
     LineartDetector,
     MLSDdetector,
-    OpenposeDetector,
 )
 
 # ── Sketch detectors ──────────────────────────────────────────────────
@@ -36,7 +33,6 @@ DETECTORS = {
 
 
 def combine_detectors(img: Image.Image, primary: str, secondary: str, w1: float, w2: float):
-    """Run two detectors and blend their outputs, like HedPidNet."""
     p_img = DETECTORS[primary]()(img)
     if secondary:
         s_img = DETECTORS[secondary]()(img)
@@ -54,9 +50,6 @@ def preprocess_sketch(
     erosion_iters: int,
     dilation_iters: int,
 ) -> Image.Image:
-    """Detect edges / sketch lines and apply morphological cleanup."""
-
-    # ── built-in composite types ──
     composite = {
         "HedPidNet": ("HED", "PidiNet", 0.6, 0.5),
         "CannyPidNet": ("Canny", "PidiNet", 0.7, 0.5),
@@ -71,22 +64,15 @@ def preprocess_sketch(
     else:
         sketch = img.copy()
 
-    # ── convert to grayscale if needed ──
     if sketch.mode != "L":
         sketch = sketch.convert("L")
-
     arr = np.array(sketch)
 
-    # ── blur ──
     if blur_size > 1 and blur_size % 2 == 1:
         arr = cv2.GaussianBlur(arr, (blur_size, blur_size), 0)
-
-    # ── invert if white-on-black (lineart style) ──
-    # HED/PidiNet output black lines on white; ensure consistency
     if np.mean(arr) > 127:
         arr = 255 - arr
 
-    # ── morphology ──
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     if erosion_iters > 0:
         arr = cv2.erode(arr, kernel, iterations=erosion_iters)
@@ -96,46 +82,30 @@ def preprocess_sketch(
     return Image.fromarray(arr).convert("RGB")
 
 
-def get_depth_map(image: Image.Image, feature_extractor, depth_estimator, device):
-    """Generate a depth map using DPT-Large."""
-    image_np = np.array(image)
-    if image_np.ndim == 2:
-        image_np = np.stack([image_np] * 3, axis=-1)
-    pil = Image.fromarray(image_np)
-
-    inputs = feature_extractor(images=pil, return_tensors="pt").to(device)
+def get_depth_map(image: Image.Image, processor, model, device):
+    """Depth map using lightweight DPT-Hybrid."""
+    inputs = processor(images=image, return_tensors="pt").to(device)
     with torch.no_grad():
-        depth_map = depth_estimator(**inputs).predicted_depth
+        depth = model(**inputs).predicted_depth
 
-    depth_map = torch.nn.functional.interpolate(
-        depth_map.unsqueeze(1),
-        size=pil.size[::-1],
+    depth = F.interpolate(
+        depth.unsqueeze(1),
+        size=image.size[::-1],
         mode="bicubic",
         align_corners=False,
     ).squeeze()
-    depth_map = depth_map.cpu().numpy()
-    depth_min, depth_max = depth_map.min(), depth_map.max()
-    depth_map = (depth_map - depth_min) / (depth_max - depth_min + 1e-8)
-    depth_map = (depth_map * 255).astype(np.uint8)
-    return Image.fromarray(depth_map).convert("RGB")
+    depth = depth.cpu().numpy()
+    dmin, dmax = depth.min(), depth.max()
+    depth = (depth - dmin) / (dmax - dmin + 1e-8)
+    depth = (depth * 255).astype(np.uint8)
+    return Image.fromarray(depth).convert("RGB")
 
 
-# ── Schedulers ────────────────────────────────────────────────────────
-
-SCHEDULERS = {
-    "DPM++ 2M Karras": lambda config: DPMSolverMultistepScheduler.from_config(
-        config, use_karras_sigmas=True, algorithm_type="dpmsolver++"
-    ),
-    "Euler a": lambda config: EulerAncestralDiscreteScheduler.from_config(config),
-}
-
-
-# ── Predictor ─────────────────────────────────────────────────────────
+# ── Models ────────────────────────────────────────────────────────────
 
 MODEL_ID = "SG161222/RealVisXL_V5.0_Lightning"
 CONTROL_DEPTH_ID = "diffusers/controlnet-depth-sdxl-1.0"
 CONTROL_CANNY_ID = "diffusers/controlnet-canny-sdxl-1.0"
-VAE_ID = "madebyollin/sdxl-vae-fp16-fix"
 
 
 class Predictor(BasePredictor):
@@ -143,40 +113,53 @@ class Predictor(BasePredictor):
         device = "cuda"
         self.device = device
 
-        print("Loading depth estimator …")
-        self.depth_feature_extractor = DPTFeatureExtractor.from_pretrained(
-            "Intel/dpt-large", local_files_only=False
-        )
-        self.depth_estimator = DPTForDepthEstimation.from_pretrained(
-            "Intel/dpt-large", local_files_only=False
+        # ── 1. Lightweight depth model ──
+        print("Loading depth model (DPT-Hybrid) …")
+        self.depth_processor = AutoImageProcessor.from_pretrained("Intel/dpt-hybrid-midas")
+        self.depth_model = DPTForDepthEstimation.from_pretrained(
+            "Intel/dpt-hybrid-midas", low_cpu_mem_usage=True
         ).to(device)
+        torch.cuda.empty_cache()
+        gc.collect()
 
-        print("Loading ControlNets …")
+        # ── 2. ControlNets ──
+        print("Loading ControlNet depth …")
         controlnet_depth = ControlNetModel.from_pretrained(
-            CONTROL_DEPTH_ID, torch_dtype=torch.float16, local_files_only=False
+            CONTROL_DEPTH_ID,
+            torch_dtype=torch.float16,
+            variant="fp16",
+            low_cpu_mem_usage=True,
         ).to(device)
+        torch.cuda.empty_cache()
+        gc.collect()
+
+        print("Loading ControlNet canny …")
         controlnet_canny = ControlNetModel.from_pretrained(
-            CONTROL_CANNY_ID, torch_dtype=torch.float16, local_files_only=False
+            CONTROL_CANNY_ID,
+            torch_dtype=torch.float16,
+            variant="fp16",
+            low_cpu_mem_usage=True,
         ).to(device)
+        torch.cuda.empty_cache()
+        gc.collect()
 
-        print("Loading VAE …")
-        vae = AutoencoderKL.from_pretrained(VAE_ID, torch_dtype=torch.float16, local_files_only=False
-        ).to(device)
-
+        # ── 3. Main pipeline ──
         print("Loading RealVisXL V5 Lightning pipeline …")
         self.pipe = StableDiffusionXLControlNetPipeline.from_pretrained(
             MODEL_ID,
             controlnet=[controlnet_depth, controlnet_canny],
-            vae=vae,
             torch_dtype=torch.float16,
             variant="fp16",
             use_safetensors=True,
-        ).to(device)
-
+            low_cpu_mem_usage=True,
+        )
+        self.pipe = self.pipe.to(device)
         self.pipe.scheduler = DDIMScheduler.from_config(self.pipe.scheduler.config)
         self.pipe.enable_model_cpu_offload()
-        self.pipe.enable_vae_slicing()
+        torch.cuda.empty_cache()
+        gc.collect()
 
+        # ── 4. Compel ──
         print("Loading Compel …")
         self.compel = Compel(
             tokenizer=[self.pipe.tokenizer, self.pipe.tokenizer_2],
@@ -184,6 +167,7 @@ class Predictor(BasePredictor):
             returned_embeddings_type=ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED,
             requires_pooled=[False, True],
         )
+        print("Setup complete.")
 
     def predict(
         self,
@@ -197,15 +181,8 @@ class Predictor(BasePredictor):
         sketch_type: str = Input(
             default="HedPidNet",
             choices=[
-                "PidiNet",
-                "HED",
-                "Lineart",
-                "Canny",
-                "CannyPidNet",
-                "CannyHed",
-                "HedPidNet",
-                "MLSD",
-                "none",
+                "PidiNet", "HED", "Lineart", "Canny",
+                "CannyPidNet", "CannyHed", "HedPidNet", "MLSD", "none",
             ],
         ),
         depth_strength: float = Input(
@@ -216,9 +193,7 @@ class Predictor(BasePredictor):
         ),
         guidance_scale: float = Input(default=7.5, ge=1, le=30),
         steps: int = Input(default=6, ge=1, le=50),
-        blur_size: int = Input(
-            default=3, description="Gaussian blur kernel (odd number)"
-        ),
+        blur_size: int = Input(default=3, description="Gaussian blur kernel (odd number)"),
         erosion_iterations: int = Input(default=2, ge=0, le=20),
         dilation_iterations: int = Input(default=5, ge=0, le=20),
         seed: int = Input(default=-1, description="Random seed. -1 = random"),
@@ -229,11 +204,11 @@ class Predictor(BasePredictor):
             seed = np.random.randint(0, 2**31)
         generator = torch.manual_seed(seed)
 
-        # ── Load input ──
+        # ── Load & resize input ──
         img = Image.open(image).convert("RGB")
         img = img.resize((width, height))
 
-        # ── Sketch detection ──
+        # ── Sketch / edge detection ──
         if sketch_type == "none":
             sketch_img = img.copy()
         else:
@@ -242,23 +217,11 @@ class Predictor(BasePredictor):
             )
 
         # ── Depth map ──
-        depth_img = get_depth_map(
-            img, self.depth_feature_extractor, self.depth_estimator, self.device
-        )
-
-        # ── Conditioning images ──
-        # ControlNet 0 = depth, ControlNet 1 = edge
-        controlnet_images = [depth_img, sketch_img]
-        controlnet_scales = [depth_strength, edge_strength]
-        # controlnet_conditioning_scale in SDXL pipeline expects a list per ControlNet
+        depth_img = get_depth_map(img, self.depth_processor, self.depth_model, self.device)
 
         # ── Encode prompt ──
-        (
-            prompt_embeds,
-            negative_prompt_embeds,
-            pooled_prompt_embeds,
-            negative_pooled_prompt_embeds,
-        ) = self.compel(prompt, negative_prompt)
+        (prompt_embeds, negative_prompt_embeds,
+         pooled_prompt_embeds, negative_pooled_prompt_embeds) = self.compel(prompt, negative_prompt)
 
         # ── Run ──
         result = self.pipe(
@@ -267,8 +230,8 @@ class Predictor(BasePredictor):
             pooled_prompt_embeds=pooled_prompt_embeds,
             negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
             image=img,
-            controlnet_conditioning_image=controlnet_images,
-            controlnet_conditioning_scale=controlnet_scales,
+            controlnet_conditioning_image=[depth_img, sketch_img],
+            controlnet_conditioning_scale=[depth_strength, edge_strength],
             num_inference_steps=steps,
             guidance_scale=guidance_scale,
             generator=generator,
