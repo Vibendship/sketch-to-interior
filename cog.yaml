@@ -16,7 +16,7 @@ build:
     - "safetensors==0.4.2"
     - "compel==2.0.0"
   run:
-    - |
+    - >-
       python -c "from transformers import AutoImageProcessor, DPTForDepthEstimation;
       AutoImageProcessor.from_pretrained('Intel/dpt-hybrid-midas');
       DPTForDepthEstimation.from_pretrained('Intel/dpt-hybrid-midas');
