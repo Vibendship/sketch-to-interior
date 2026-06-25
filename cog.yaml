@@ -16,6 +16,19 @@ build:
     - "safetensors==0.4.2"
     - "compel==2.0.0"
   run:
-    - "pwd && find / -name download_models.py -maxdepth 4 2>/dev/null"
+    - |
+      python -c "from transformers import AutoImageProcessor, DPTForDepthEstimation;
+      AutoImageProcessor.from_pretrained('Intel/dpt-hybrid-midas');
+      DPTForDepthEstimation.from_pretrained('Intel/dpt-hybrid-midas');
+      from diffusers import ControlNetModel;
+      ControlNetModel.from_pretrained('diffusers/controlnet-depth-sdxl-1.0');
+      ControlNetModel.from_pretrained('diffusers/controlnet-canny-sdxl-1.0');
+      from diffusers import StableDiffusionXLControlNetPipeline;
+      StableDiffusionXLControlNetPipeline.from_pretrained('SG161222/RealVisXL_V5.0_Lightning', variant='fp16', use_safetensors=True);
+      from controlnet_aux import HEDdetector, PidiNetDetector, LineartDetector, MLSDdetector;
+      HEDdetector.from_pretrained('lllyasviel/Annotators');
+      PidiNetDetector.from_pretrained('lllyasviel/Annotators');
+      LineartDetector.from_pretrained('lllyasviel/Annotators');
+      MLSDdetector.from_pretrained('lllyasviel/Annotators');"
 
 predict: "predict.py:Predictor"
