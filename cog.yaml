@@ -15,28 +15,5 @@ build:
     - "numpy==1.26.3"
     - "safetensors==0.4.2"
     - "compel==2.0.0"
-    - "huggingface_hub==0.22.2"
-  run:
-    - >-
-      python -c "
-      from huggingface_hub import snapshot_download;
-      from transformers import AutoImageProcessor, DPTForDepthEstimation;
-      print('[1/5] Depth model …');
-      AutoImageProcessor.from_pretrained('Intel/dpt-hybrid-midas');
-      DPTForDepthEstimation.from_pretrained('Intel/dpt-hybrid-midas');
-      print('[2/5] ControlNet depth …');
-      snapshot_download('diffusers/controlnet-depth-sdxl-1.0', ignore_patterns=['*.bin', '*.msgpack']);
-      print('[3/5] ControlNet canny …');
-      snapshot_download('diffusers/controlnet-canny-sdxl-1.0', ignore_patterns=['*.bin', '*.msgpack']);
-      print('[4/5] RealVisXL V5 (fp16 components) …');
-      snapshot_download('SG161222/RealVisXL_V5.0_Lightning', allow_patterns=['unet/*fp16*', 'text_encoder/*fp16*', 'text_encoder_2/*fp16*', 'vae/*fp16*', '*.json', '*.txt'], ignore_patterns=['*fp32*', '*Lightning_fp*']);
-      print('[5/5] Annotators …');
-      from controlnet_aux import HEDdetector, PidiNetDetector, LineartDetector, MLSDdetector;
-      HEDdetector.from_pretrained('lllyasviel/Annotators');
-      PidiNetDetector.from_pretrained('lllyasviel/Annotators');
-      LineartDetector.from_pretrained('lllyasviel/Annotators');
-      MLSDdetector.from_pretrained('lllyasviel/Annotators');
-      print('All models cached.');
-      "
 
 predict: "predict.py:Predictor"
